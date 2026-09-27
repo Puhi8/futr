@@ -25,4 +25,4 @@ COPY app.py lopolis.py ./
 VOLUME ["/data"]
 EXPOSE 5847
 
-CMD ["python", "app.py", "--docker", "--port", "5847"]
+CMD ["sh", "-c", "([ -f /data/crontab ] && cp /data/crontab /etc/crontabs/root && crond -f -l 8) & exec python app.py --docker --port 5847"]

@@ -5,3 +5,6 @@ dist
 node_modules
 package-lock.json
 /serve
+compose.yaml
+cron.log
+crontab

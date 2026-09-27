@@ -6,10 +6,12 @@ import json
 import os.path
 from datetime import datetime, timedelta
 import argparse
+import sys
 
 parser = argparse.ArgumentParser("futr")
 parser.add_argument("--port", default=5847, type=int)
 parser.add_argument("--docker", action="store_true")
+parser.add_argument("--verbose", "-v", action="store_true", help="log each stage of ordering/gathering")
 args = parser.parse_args()
 
 PORT = args.port
@@ -52,6 +54,10 @@ def ensure_meals_file():
 
     write_meals(EMPTY_MEALS_FILE)
 
+def log(stage: str, msg: str):
+    if args.verbose:
+        print(f"[{stage}] {msg}", file=sys.stderr)
+
 def get_meal_id(options: list[tuple[str, int]]) -> tuple[int, str]:
     ensure_meals_file()
     meals = json.load(open(DATA_FP))["meals"]
@@ -70,35 +76,47 @@ def get_meal_id(options: list[tuple[str, int]]) -> tuple[int, str]:
 
     return MEAL_NOT_FOUND, ""
 
-def set_meals():
+def set_meals() -> list[str]:
+    failed: list[str] = []
     next_moday = datetime.today() + timedelta((0 - datetime.today().weekday()) % 7)
+    # log("order", f"week of {next_moday.strftime('%d.%m.%Y')}")
     for i in range(5):
         date = next_moday + timedelta(i)
 
+        # day = date.strftime("%d.%m")
+        # log("order", f"{day} fetching menu")
         snack = session.api.get_meals_menu(date)["items"][0]["menus"]["snack"]
         opts = [(i["description"].strip(), int(i["id"])) for i in snack]
         id, desc = get_meal_id(opts)
 
         if id == MEAL_NOT_FOUND:
-            print(f"Failed to set meal: {id}, for date: {date.strftime('%d/%m/%Y')}")
+            # log("order", f"{day} no preference matches the {len(opts)} menu options")
+            failed.append(date.strftime("%d-%m"))
             continue
 
         if id == UNSET_MEAL:
+            # log("order", f"{day} cancelling meal")
             r = session.api.unset_meals_menu(date)
         else:
+            # log("order", f"{day} ordering {desc!r} (id {id})")
             r = session.api.set_meals_menu(date, id)
 
         if not r["ok"]:
-            print(f"Failed to set meal: {id}, for date: {date.strftime('%d/%m/%Y')}")
-            print(f"-> {r}")
+            # log("order", f"{day} FAILED: {r.get('error', r)}")
+            failed.append(date.strftime("%d-%m"))
             continue
 
+        # log("order", f"{day} ok")
         datestr = date.strftime("%d-%m")
         if not (datestr in history.keys()):
             history.update({datestr: desc})
 
+    # log("order", f"done, {5 - len(failed)}/5 days set" + (f", failed: {', '.join(failed)}" if failed else ""))
+    return failed
+
 def gather_meals(n: int) -> list:
     gathered: list[str] = []
+    # log("gather", f"scanning the last {n} days")
     for i in range(n):
         date = datetime.today() - timedelta(i)
 
@@ -148,6 +166,7 @@ def save_gathered(n: int):
 
     meals["unordered"] = gathered
 
+    # log("gather", f"{len(meals['meals'])} known, {len(gathered)} unordered")
     write_meals(meals)
 
 def strip_dict(obj: dict[str, Any], *fields: str) -> dict:
@@ -197,6 +216,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             elif self.path == "/api/history":
                 self.serve_json(200, json.dumps(history).encode())
 
+            elif self.path == "/api/order":
+                # log("order", "refreshing session")
+                session.refresh()
+                failed = set_meals()
+                if failed:
+                    return self.serve_json(500, json.dumps({"ok": False, "message": f"Failed for: {', '.join(failed)}"}).encode())
+
+                return self.serve_json(200, b"{\"ok\": true}")
+
             elif self.path == "/api/set" or self.path == "/api/gather":
                 if self.path == "/api/set":
                     session.refresh()
@@ -211,13 +239,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
 
             else:
-                self.send_response(404)
-                self.serve_file("404.html")
+                self.serve_file("404.html", 404)
 
         except Exception as e:
-            self.send_response(500)
             print(f"[do_GET] Failed to serve {self.path}: {e}")
-            self.serve_file("500.html")
+            self.serve_file("500.html", 500)
 
     def do_POST(self):
         try:
@@ -263,11 +289,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def get_form(self):
         return json.loads(self.rfile.read(int(self.headers['Content-Length'])))
 
-    def serve_file(self, relative_path: str):
+    def serve_file(self, relative_path: str, status: int = 200):
         if relative_path.startswith("/"):
             relative_path = relative_path[1:]
         self.path = os.path.join(SERVE_PREFIX, relative_path)
+        self._status = status
         return super().do_GET()
+
+    def send_response(self, code, message=None):
+        # ponytail: SimpleHTTPRequestHandler.do_GET always sends 200 for a found file; override with the intended status
+        if code == 200:
+            code = self.__dict__.pop("_status", 200)
+        super().send_response(code, message)
 
 socketserver.TCPServer.allow_reuse_address = True
 with socketserver.TCPServer(("", PORT), Handler) as httpd:

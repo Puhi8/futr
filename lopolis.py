@@ -20,6 +20,7 @@ from datetime import datetime
 import json
 from typing import Any
 import urllib.request
+import urllib.error
 import urllib.response
 import urllib.parse
 import http.cookiejar
@@ -29,8 +30,7 @@ class LoginError(Exception):...
 class API:
     def __init__(self, session) -> None:
         self.session = session
-        self._next_action_script_pos = {"timetable": 13, "meals": 15, "unset_meals": 15, "evaluations": 13}
-        self._next_action_in_file_pos = {"timetable": 0, "meals": 2, "unset_meals": 0, "evaluations": 0}
+        self._next_action_names = {"timetable": "getWeekTimetable", "meals": "registerMeal", "unset_meals": "unregisterMeal", "evaluations": "getEvaluations"}
 
     def _request(self, path: str) -> Any:
         """
@@ -55,32 +55,27 @@ class API:
 
         return res
 
-    def _get_next_action(self, path: str, id: str | None = None):
+    def _get_next_action(self, path: str, id: str | None = None) -> str:
         if not id:
             id = path.strip()[1:]
 
-        raw_timetable_data = self.session.request(path, text=True)
-        chunk = None
-        next_action = ""
+        name = self._next_action_names[id]
+        html = str(self.session.request(path, text=True)).replace("\\n", "\n")
 
-        c = 0
-        for i in re.findall(r'script src="\/_next\/static\/chunks\/(.{13})', str(raw_timetable_data).replace("\\n", "\n")):
-            if c == self._next_action_script_pos[id]:
-                chunk = i
-                break
+        scripts = re.findall(r'script src="/_next/static/chunks/([^"]+\.js)"', html)
+        scripts += [c for c in re.findall(r'\\"script\\",\\"script-\d+\\",\{\\"src\\":\\"/_next/static/chunks/([^\\]+\.js)', html) if c not in scripts]
 
-            c += 1
+        for chunk in scripts:
+            try:
+                js = str(self.session.request(f"/_next/static/chunks/{chunk}", text=True))
+            except urllib.error.HTTPError:
+                continue
 
-        if chunk:
-            c = 0
-            for j in re.findall(r'[a-f0-9]{42}', str(self.session.request(f"/_next/static/chunks/{chunk}.js", text=True))):
-                if c == self._next_action_in_file_pos[id]:
-                    next_action = j
-                    break
+            m = re.search(r'createServerReference\)\("([a-f0-9]{42})"[^)]*?"' + name + '"', js)
+            if m:
+                return m.group(1)
 
-                c += 1
-
-        return next_action
+        raise LookupError(f"next action {name!r} not found on {path}")
 
     def _get_next_router_state_tree(self, path: str):
         next_header_data = self.session.request(path, headers={"rsc": 1, "next-router-prefetch": 1, "next-url": path}, text=True)
@@ -122,7 +117,7 @@ class API:
     def get_meals_menu(self, date: datetime) -> Any:
         return self._request(f"/api/meals/menus?date={self._format_date(date)}")
 
-    def set_meals_menu(self, date: datetime, meal_id: int, meal_type: str = "afternoon_snack") -> Any:
+    def set_meals_menu(self, date: datetime, meal_id: int, meal_type: str = "snack") -> Any:
         strdate = self._format_date(date)
 
         # These headers encode the next js action, so the server knows to respond with the raw data and not the html page
@@ -135,7 +130,7 @@ class API:
 
         return self._parse_next_js_action_response(str(r))[1]
 
-    def unset_meals_menu(self, date: datetime, meal_type = "afternoon_snack") -> Any:
+    def unset_meals_menu(self, date: datetime, meal_type = "snack") -> Any:
         strdate = self._format_date(date)
 
         headers = {

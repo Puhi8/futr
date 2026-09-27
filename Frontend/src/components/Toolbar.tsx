@@ -61,9 +61,9 @@ export default function Toolbar({ historyItems, isUnorderedVisible, onCredential
     finally { setIsGathering(false) }
   }
 
-  function handleOrder() {
-    void getFetchData('/api/order')
-    console.log("ORDER")
+  async function handleOrder() {
+    if (await getFetchData<unknown>('/api/order') === null) return
+    addAlert("Meals ordered", "G")
   }
 
 
@@ -73,9 +73,7 @@ export default function Toolbar({ historyItems, isUnorderedVisible, onCredential
         aria-expanded={isOpen.history}
         aria-haspopup="dialog"
         className="menu-button history-button"
-        onClick={() => {
-          setIsOpen(open => ({ history: !open.history, menu: false }))
-        }}
+        onClick={() => setIsOpen(open => ({ history: !open.history, menu: false }))}
         type="button"
       >
         Order history
@@ -116,9 +114,7 @@ export default function Toolbar({ historyItems, isUnorderedVisible, onCredential
         aria-expanded={isOpen.menu}
         aria-haspopup="dialog"
         className="menu-button"
-        onClick={() => {
-          setIsOpen(open => ({ history: false, menu: !open.menu }))
-        }}
+        onClick={() => setIsOpen(open => ({ history: false, menu: !open.menu }))}
         type="button"
       >
         User actions

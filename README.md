@@ -7,7 +7,7 @@ Futr is a web app for managing / ordering Lopolis meals.
 ```yaml
 services:
   futr:
-    image: ghcr.io/lenartkladnik/futr:latest
+    image: ghcr.io/puhi8/futr:latest
     restart: unless-stopped
     ports:
       - "5847:5847"
